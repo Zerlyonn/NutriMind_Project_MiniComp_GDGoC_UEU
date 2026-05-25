@@ -93,12 +93,26 @@ npm install
 ```
 
 ### 4. Setup API Key
-Buka `app.py`, cari baris ini (baris ~14):
-```python
-API_KEY = "MASUKKAN_API_KEY_KAMU"
-```
-Ganti dengan API Key baru dari: https://aistudio.google.com/
+Aplikasi akan memuat nilai dari file `.env` secara otomatis jika `python-dotenv` sudah terpasang.
 
+- Salin `.env` dari file contoh atau buat sendiri di folder proyek.
+- Tambahkan API key Anda ke dalam `.env`:
+
+```env
+GEMINI_API_KEY=your_api_key_here
+```
+
+Anda juga masih bisa menggunakan environment variable langsung:
+
+```bash
+export GEMINI_API_KEY="your_api_key_here"
+```
+
+atau di Windows PowerShell:
+
+```powershell
+$env:GEMINI_API_KEY = "your_api_key_here"
+```
 
 ### 5. Jalankan Server
 ```bash

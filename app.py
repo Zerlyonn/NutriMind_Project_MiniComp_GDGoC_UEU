@@ -7,11 +7,26 @@ from flask import Flask, render_template, request, jsonify
 
 warnings.filterwarnings("ignore", category=FutureWarning)
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
 import google.generativeai as genai
 
 app = Flask(__name__)
 
-API_KEY = "YOUR_GOOGLE_API_KEY_HERE"
+API_KEY = (
+    os.getenv('GEMINI_API_KEY')
+    or os.getenv('GOOGLE_API_KEY')
+    or os.getenv('OPENAI_API_KEY')
+)
+if not API_KEY:
+    raise RuntimeError(
+        'Environment variable GEMINI_API_KEY or GOOGLE_API_KEY is required. '
+        'Set one before running NutriMind.'
+    )
 genai.configure(api_key=API_KEY)
 
 CACHED_WORKING_MODEL = None
@@ -74,37 +89,35 @@ def extract_json_from_text(text):
 
 def resolve_best_model():
     """
-    Mendeteksi secara dinamis model apa saja yang aktif dan didukung oleh API Key pengguna.
-    Ini menghindari error 404 jika akun atau API Key memiliki batasan model tertentu.
+    Kembalikan daftar model Gemini yang valid berdasarkan urutan prioritas.
+    Menghindari model lama yang sering tidak tersedia pada API v1beta.
     """
     global CACHED_WORKING_MODEL
     
     if CACHED_WORKING_MODEL:
         return [CACHED_WORKING_MODEL]
 
-    candidates = ['gemini-1.5-flash', 'gemini-1.5-flash-latest', 'gemini-1.5-flash-8b', 'gemini-1.0-pro']
-    
-    try:
-        print("[NutriMind Debug]: Memindai model aktif pada API Key Anda...")
-        available_models = []
-        for m in genai.list_models():
-            if 'generateContent' in m.supported_generation_methods:
-                clean_name = m.name.replace('models/', '')
-                available_models.append(clean_name)
-        
-        print(f"[NutriMind Debug]: Model yang didukung oleh API Key Anda: {available_models}")
-        
-        prioritized = [m for m in candidates if m in available_models]
-        for m in available_models:
-            if m not in prioritized:
-                prioritized.append(m)
-                
-        if prioritized:
-            return prioritized
-    except Exception as e:
-        print(f"[NutriMind Debug]: Gagal memindai model secara dinamis ({e}). Menggunakan metode fallback manual.")
-    
-    return candidates
+    return [
+        'models/gemini-2.5-flash',
+        'models/gemini-2.5-flash-latest',
+        'models/gemini-1.5-flash',
+        'models/gemini-1.5-flash-latest',
+        'models/gemini-1.5-flash-8b'
+    ]
+
+
+def generate_with_model(model_name, system_prompt, user_prompt):
+    prompt_text = f"{system_prompt}\n\n{user_prompt}"
+    if hasattr(genai, 'generate_text'):
+        return genai.generate_text(
+            model=model_name,
+            prompt=prompt_text,
+            temperature=0.3,
+            max_output_tokens=1500,
+        )
+
+    model = genai.GenerativeModel(model_name=model_name)
+    return model.generate_content([system_prompt, user_prompt])
 
 
 @app.route('/')
@@ -186,15 +199,22 @@ def analyze():
             for attempt in range(max_retries):
                 try:
                     print(f"[NutriMind]: Mengirim ke Gemini ({model_name}) - Percobaan ke-{attempt + 1}...")
-                    model = genai.GenerativeModel(
-                        model_name=model_name,
-                        generation_config={"response_mime_type": "application/json"}
-                    )
-                    response = model.generate_content([system_prompt, user_prompt])
-                    
-                    if response and response.text:
+                    response = generate_with_model(model_name, system_prompt, user_prompt)
+                    response_text = None
+
+                    if isinstance(response, str):
+                        response_text = response
+                    else:
+                        response_text = getattr(response, 'text', None)
+                        if not response_text and isinstance(response, dict):
+                            response_text = response.get('text') or response.get('output')
+                        if not response_text and hasattr(response, 'output'):
+                            response_text = str(response.output)
+
+                    if response_text:
                         print(f"[NutriMind]: Sukses menggunakan model {model_name}!")
                         CACHED_WORKING_MODEL = model_name
+                        response = response_text
                         success = True
                         break
                 except Exception as ex:
@@ -205,8 +225,7 @@ def analyze():
                         break
                     
                     if attempt < max_retries - 1:
-                        sleep_time = retry_delays[attempt]
-                        time.sleep(sleep_time)
+                        time.sleep(retry_delays[attempt])
             
             if success:
                 break
@@ -214,7 +233,7 @@ def analyze():
         if not response:
             raise last_exception if last_exception else Exception("Semua kandidat model Gemini gagal diakses.")
         
-        parsed_result = extract_json_from_text(response.text)
+        parsed_result = extract_json_from_text(response)
         return jsonify(parsed_result)
 
     except Exception as e:
